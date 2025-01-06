@@ -19,13 +19,14 @@ import asyncio  # Für parallele Verarbeitung
 import aiohttp  # Für effiziente HTTP-Anfragen
 import urllib.parse
 import logging
-from typing import Dict, List, Any, Optional, Iterator, Set, DefaultDict
+from typing import Dict, List, Any, Optional, Iterator, Set, DefaultDict, Tuple
 from pathlib import Path
 import sys
 import argparse
 from collections import defaultdict
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -249,19 +250,37 @@ async def check_url(
         return False, None, False, None
 
 
+def count_lines(file_path: Path) -> int:
+    """Zählt die Anzahl der Zeilen in einer Datei."""
+    with open(file_path, "r") as f:
+        return sum(1 for _ in f)
+
+
 def read_jsonl_chunks(
-    file_path: Path, chunk_size: int, verbose: bool
-) -> Iterator[List[Dict]]:
+    file_path: Path,
+    chunk_size: int,
+    verbose: bool,
+    visual: bool = False,
+    total_lines: Optional[int] = None,
+) -> Iterator[Tuple[List[Dict], Optional[tqdm]]]:
     """
     Liest die JSON-Lines Datei in Chunks (Teilstücken).
-
-    Warum in Chunks?
-    - Speichereffizienz: Nicht die ganze Datei muss auf einmal geladen werden
-    - Fortschrittskontrolle: Regelmäßige Statusmeldungen sind möglich
-    - Fehlertoleranz: Ein Fehler betrifft nur den aktuellen Chunk
+    Bei aktivierter visueller Anzeige wird ein tqdm-Objekt für den Chunk zurückgegeben.
     """
-    if verbose:
+    if verbose and not visual:
         logger.debug(f"Beginne Einlesen der Datei {file_path}")
+
+    chunk_progress = None
+    if visual:
+        # Fortschrittsbalken für die Gesamtverarbeitung
+        main_progress = tqdm(
+            total=total_lines,
+            desc="Gesamtfortschritt",
+            unit="Zeilen",
+            position=0,
+            leave=True,
+        )
+
     with open(file_path, "r") as f:
         chunk = []
         for line_num, line in enumerate(f, 1):
@@ -269,19 +288,45 @@ def read_jsonl_chunks(
                 obj = json.loads(line.strip())
                 chunk.append(obj)
                 if len(chunk) >= chunk_size:
-                    if verbose:
+                    if verbose and not visual:
                         logger.debug(
                             f"Chunk mit {len(chunk)} Objekten geladen (bis Zeile {line_num})"
                         )
-                    yield chunk
+                    if visual:
+                        if chunk_progress:
+                            chunk_progress.close()
+                        chunk_progress = tqdm(
+                            total=len(chunk),
+                            desc="Aktueller Chunk",
+                            unit="URLs",
+                            position=1,
+                            leave=False,
+                        )
+                        main_progress.update(len(chunk))
+                    yield chunk, chunk_progress
                     chunk = []
             except json.JSONDecodeError as e:
-                logger.error(f"Fehler beim Parsen der JSON-Line {line_num}: {str(e)}")
+                if not visual:
+                    logger.error(
+                        f"Fehler beim Parsen der JSON-Line {line_num}: {str(e)}"
+                    )
                 continue
         if chunk:
-            if verbose:
+            if verbose and not visual:
                 logger.debug(f"Letzter Chunk mit {len(chunk)} Objekten geladen")
-            yield chunk
+            if visual:
+                if chunk_progress:
+                    chunk_progress.close()
+                chunk_progress = tqdm(
+                    total=len(chunk),
+                    desc="Aktueller Chunk",
+                    unit="URLs",
+                    position=1,
+                    leave=False,
+                )
+                main_progress.update(len(chunk))
+                main_progress.close()
+            yield chunk, chunk_progress
 
 
 async def process_chunk(
@@ -293,33 +338,27 @@ async def process_chunk(
     keep_timeout_urls: bool,
     stats: Statistics,
     follow_redirects: bool,
+    chunk_progress: Optional[tqdm] = None,
 ) -> List[Dict[str, Any]]:
     """
     Verarbeitet einen Chunk von JSON-Objekten parallel.
-
-    Diese Funktion ist für die eigentliche Verarbeitung zuständig:
-    - Prüft URLs in den angegebenen Feldern
-    - Aktualisiert oder löscht URLs basierend auf den Ergebnissen
-    - Sammelt Statistiken für die Auswertung
-    - Behandelt Timeout-Fälle nach Benutzereinstellung
-    - Folgt Weiterleitungen wenn gewünscht (--follow-redirects)
     """
     processed_chunk = []
-    if verbose:
+    if verbose and not chunk_progress:
         logger.debug(f"Verarbeite Chunk mit {len(chunk)} Objekten")
     async with aiohttp.ClientSession() as session:
         for item_num, item in enumerate(chunk, 1):
             processed_item = item.copy()
-            if verbose:
+            if verbose and not chunk_progress:
                 logger.debug(f"Verarbeite Objekt {item_num}/{len(chunk)}")
             for field in fields:
                 if field in processed_item:
                     value = processed_item[field]
                     if isinstance(value, str) and is_valid_url(value):
-                        if verbose:
+                        if verbose and not chunk_progress:
                             logger.debug(f"Prüfe Feld '{field}' mit URL: {value}")
                         is_valid, new_url, is_timeout, status_code = await check_url(
-                            session, value, verbose, timeout
+                            session, value, verbose and not chunk_progress, timeout
                         )
                         stats.add_url_check(
                             field, value, is_valid, new_url, is_timeout, status_code
@@ -327,7 +366,7 @@ async def process_chunk(
 
                         if is_timeout:
                             timeout_urls.add(value)
-                            if verbose:
+                            if verbose and not chunk_progress:
                                 logger.debug(f"URL {value} zum Timeout-Log hinzugefügt")
                                 if keep_timeout_urls:
                                     logger.debug(
@@ -340,24 +379,26 @@ async def process_chunk(
                             if not keep_timeout_urls:
                                 del processed_item[field]
                         elif not is_valid:
-                            if verbose:
+                            if verbose and not chunk_progress:
                                 logger.debug(
                                     f"Lösche ungültiges Feld '{field}' mit URL: {value}"
                                 )
                             del processed_item[field]
                         elif new_url != value and follow_redirects:
-                            if verbose:
+                            if verbose and not chunk_progress:
                                 logger.debug(
                                     f"Aktualisiere URL in Feld '{field}' von {value} zu {new_url}"
                                 )
                             processed_item[field] = new_url
                     else:
-                        if verbose and isinstance(value, str):
+                        if verbose and not chunk_progress and isinstance(value, str):
                             logger.debug(
                                 f"Lösche Feld '{field}' mit ungültiger URL: {value}"
                             )
                         del processed_item[field]
             processed_chunk.append(processed_item)
+            if chunk_progress:
+                chunk_progress.update(1)
     return processed_chunk
 
 
@@ -371,23 +412,13 @@ async def process_json_file(
     timeout_file: Optional[Path] = None,
     keep_timeout_urls: bool = False,
     follow_redirects: bool = False,
+    visual: bool = False,
 ):
     """
     Hauptfunktion zur Verarbeitung der JSON-Lines Datei.
-
-    Diese Funktion koordiniert den gesamten Verarbeitungsprozess:
-    - Liest die Eingabedatei
-    - Steuert die Chunk-Verarbeitung
-    - Sammelt Timeout-URLs
-    - Schreibt die Ergebnisse
-    - Erstellt die Statistik
-
-    Die Verarbeitung erfolgt in Chunks, um auch sehr große Dateien
-    effizient verarbeiten zu können. Fehler in einzelnen URLs oder
-    Chunks beeinflussen nicht die Gesamtverarbeitung.
     """
     try:
-        if verbose:
+        if verbose and not visual:
             logger.debug(f"Starte Verarbeitung von {input_file}")
             logger.debug(f"Zu prüfende Felder: {', '.join(fields)}")
             logger.debug(f"Chunk-Größe: {chunk_size}")
@@ -401,13 +432,16 @@ async def process_json_file(
             if timeout_file:
                 logger.debug(f"Timeout-URLs werden in {timeout_file} gespeichert")
 
+        total_lines = count_lines(input_file) if visual else None
         timeout_urls: Set[str] = set()
         stats = Statistics()
 
         with open(output_file, "w") as out_f:
             chunks_processed = 0
             total_items = 0
-            for chunk in read_jsonl_chunks(input_file, chunk_size, verbose):
+            for chunk, chunk_progress in read_jsonl_chunks(
+                input_file, chunk_size, verbose, visual, total_lines
+            ):
                 chunks_processed += 1
                 total_items += len(chunk)
                 processed_chunk = await process_chunk(
@@ -419,25 +453,26 @@ async def process_json_file(
                     keep_timeout_urls,
                     stats,
                     follow_redirects,
+                    chunk_progress,
                 )
                 for item in processed_chunk:
                     out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                logger.info(
-                    f"Chunk {chunks_processed} mit {len(chunk)} Einträgen verarbeitet (Gesamt: {total_items})"
-                )
+                if not visual:
+                    logger.info(
+                        f"Chunk {chunks_processed} mit {len(chunk)} Einträgen verarbeitet (Gesamt: {total_items})"
+                    )
 
-        # Timeout-URLs in separate Datei schreiben, falls gewünscht
         if timeout_file and timeout_urls:
             with open(timeout_file, "w") as tf:
                 for url in sorted(timeout_urls):
                     tf.write(f"{url}\n")
-            if verbose:
+            if verbose and not visual:
                 logger.debug(
                     f"{len(timeout_urls)} Timeout-URLs in {timeout_file} gespeichert"
                 )
 
-        # Statistik ausgeben
-        stats.print_summary(verbose)
+        if not visual:
+            stats.print_summary(verbose)
 
     except Exception as e:
         logger.error(f"Fehler bei der Verarbeitung: {str(e)}")
@@ -447,15 +482,6 @@ async def process_json_file(
 def main():
     """
     Haupteinstiegspunkt des Programms.
-
-    Hier werden:
-    - Kommandozeilenargumente verarbeitet
-    - Grundlegende Prüfungen durchgeführt
-    - Die Verarbeitung gestartet
-
-    Das Programm ist so gestaltet, dass es sowohl für kleine als auch
-    für sehr große Dateien effizient arbeitet und dabei möglichst
-    benutzerfreundlich bleibt.
     """
     parser = argparse.ArgumentParser(
         description="Prüft und bereinigt URLs in JSON-Lines Dateien"
@@ -495,9 +521,14 @@ def main():
         action="store_true",
         help="Bei Weiterleitungen (301/302) die neue URL übernehmen",
     )
+    parser.add_argument(
+        "--visual",
+        action="store_true",
+        help="Zeigt eine visuelle Fortschrittsanzeige",
+    )
 
     args = parser.parse_args()
-    setup_logging(args.verbose)
+    setup_logging(args.verbose and not args.visual)
 
     input_path = Path(args.input_file)
     if not input_path.exists():
@@ -510,7 +541,7 @@ def main():
 
     timeout_path = Path(args.timeout_file) if args.timeout_file else None
 
-    if args.verbose:
+    if args.verbose and not args.visual:
         logger.debug("Programmstart")
         logger.debug(f"Eingabedatei: {input_path}")
         logger.debug(f"Ausgabedatei: {output_path}")
@@ -528,14 +559,16 @@ def main():
             timeout_path,
             args.keep_timeout,
             args.follow_redirects,
+            args.visual,
         )
     )
 
-    if args.verbose:
+    if args.verbose and not args.visual:
         logger.debug("Programmende")
-    logger.info(
-        f"Verarbeitung abgeschlossen. Ergebnis wurde in {output_path} gespeichert."
-    )
+    if not args.visual:
+        logger.info(
+            f"Verarbeitung abgeschlossen. Ergebnis wurde in {output_path} gespeichert."
+        )
 
 
 if __name__ == "__main__":
