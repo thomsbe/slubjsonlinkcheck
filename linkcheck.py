@@ -192,7 +192,7 @@ async def check_url(
 
     Diese Funktion ist das Herzstück der URL-Prüfung. Sie:
     - Versucht die URL aufzurufen
-    - Erkennt Weiterleitungen
+    - Erkennt Weiterleitungen (301, 302)
     - Behandelt Timeouts
     - Identifiziert verschiedene Fehlerzustände
 
@@ -214,17 +214,24 @@ async def check_url(
                 if verbose:
                     logger.debug(f"URL {url} ist erreichbar (Status 200)")
                 return True, url, False, status
-            elif status == 301:
+            elif status in (301, 302):
                 new_location = response.headers.get("Location")
                 if new_location:
                     if verbose:
                         logger.debug(
-                            f"URL {url} wurde zu {new_location} weitergeleitet (Status 301)"
+                            f"URL {url} wurde zu {new_location} weitergeleitet (Status {status})"
                         )
                     return True, new_location, False, status
                 if verbose:
-                    logger.debug(f"URL {url} hat Status 301, aber keine neue Location")
-                return False, None, False, status
+                    logger.debug(
+                        f"URL {url} hat Status {status}, aber keine neue Location"
+                    )
+                return (
+                    True,
+                    url,
+                    False,
+                    status,
+                )  # Weiterleitung ohne Ziel gilt trotzdem als gültig
             elif status == 404:
                 if verbose:
                     logger.debug(f"URL {url} ist nicht erreichbar (Status 404)")
@@ -285,6 +292,7 @@ async def process_chunk(
     timeout_urls: Set[str],
     keep_timeout_urls: bool,
     stats: Statistics,
+    follow_redirects: bool,
 ) -> List[Dict[str, Any]]:
     """
     Verarbeitet einen Chunk von JSON-Objekten parallel.
@@ -294,6 +302,7 @@ async def process_chunk(
     - Aktualisiert oder löscht URLs basierend auf den Ergebnissen
     - Sammelt Statistiken für die Auswertung
     - Behandelt Timeout-Fälle nach Benutzereinstellung
+    - Folgt Weiterleitungen wenn gewünscht (--follow-redirects)
     """
     processed_chunk = []
     if verbose:
@@ -336,7 +345,7 @@ async def process_chunk(
                                     f"Lösche ungültiges Feld '{field}' mit URL: {value}"
                                 )
                             del processed_item[field]
-                        elif new_url != value:
+                        elif new_url != value and follow_redirects:
                             if verbose:
                                 logger.debug(
                                     f"Aktualisiere URL in Feld '{field}' von {value} zu {new_url}"
@@ -361,6 +370,7 @@ async def process_json_file(
     timeout: float = 10.0,
     timeout_file: Optional[Path] = None,
     keep_timeout_urls: bool = False,
+    follow_redirects: bool = False,
 ):
     """
     Hauptfunktion zur Verarbeitung der JSON-Lines Datei.
@@ -385,6 +395,9 @@ async def process_json_file(
             logger.debug(
                 f"Timeout-URLs werden {'behalten' if keep_timeout_urls else 'gelöscht'}"
             )
+            logger.debug(
+                f"Weiterleitungen werden {'verfolgt' if follow_redirects else 'beibehalten'}"
+            )
             if timeout_file:
                 logger.debug(f"Timeout-URLs werden in {timeout_file} gespeichert")
 
@@ -405,6 +418,7 @@ async def process_json_file(
                     timeout_urls,
                     keep_timeout_urls,
                     stats,
+                    follow_redirects,
                 )
                 for item in processed_chunk:
                     out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -476,6 +490,11 @@ def main():
         action="store_true",
         help="URLs bei Timeout behalten statt zu löschen",
     )
+    parser.add_argument(
+        "--follow-redirects",
+        action="store_true",
+        help="Bei Weiterleitungen (301/302) die neue URL übernehmen",
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose)
@@ -508,6 +527,7 @@ def main():
             args.timeout,
             timeout_path,
             args.keep_timeout,
+            args.follow_redirects,
         )
     )
 
