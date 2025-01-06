@@ -30,6 +30,7 @@ python linkcheck.py input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
 - `--keep-timeout`: Optional: URLs bei Timeout behalten statt zu löschen
 - `--follow-redirects`: Optional: Bei Weiterleitungen (301/302) die neue URL übernehmen (Standard: Original-URL behalten)
 - `--visual`: Optional: Zeigt eine visuelle Fortschrittsanzeige statt Logging-Ausgaben
+- `--threads`: Optional: Anzahl der parallel arbeitenden Threads (Standard: 1)
 
 ### Beispiele
 
@@ -58,18 +59,24 @@ Weiterleitungen folgen und visuelle Fortschrittsanzeige:
 python linkcheck.py daten.jsonl url_feld --follow-redirects --visual
 ```
 
+Parallele Verarbeitung mit mehreren Threads:
+```bash
+python linkcheck.py daten.jsonl url_feld --threads 5 --visual
+```
+
 ## Funktionsweise
 
 1. Das Tool liest die JSON-Lines Datei zeilenweise ein
 2. Verarbeitet die Daten in Chunks für optimale Performance
-3. Prüft die angegebenen Felder auf gültige URLs
-4. Überprüft die Erreichbarkeit der URLs:
+3. Verteilt die Chunks auf die angegebene Anzahl von Threads
+4. Prüft die angegebenen Felder auf gültige URLs
+5. Überprüft die Erreichbarkeit der URLs:
    - Status 200: URL wird beibehalten
    - Status 301/302: URL wird beibehalten oder aktualisiert (mit --follow-redirects)
    - Status 404: Feld wird gelöscht
    - Timeout: Feld wird gelöscht (oder behalten mit --keep-timeout) und URL wird optional in Timeout-Datei geschrieben
    - Ungültige URL: Feld wird gelöscht
-5. Speichert das Ergebnis zeilenweise in der Ausgabedatei
+6. Speichert das Ergebnis zeilenweise in der Ausgabedatei
 
 Die Verarbeitung erfolgt parallel für optimale Leistung bei großen Dateien. Fehlerhafte JSON-Lines werden übersprungen und geloggt.
 
@@ -87,8 +94,16 @@ Im Verbose-Modus gibt das Tool detaillierte Informationen aus:
 
 ### Visueller Modus (--visual)
 
-Im visuellen Modus zeigt das Tool zwei Fortschrittsbalken:
+Im visuellen Modus zeigt das Tool Fortschrittsbalken:
 - Gesamtfortschritt: Zeigt die Verarbeitung aller Zeilen der Eingabedatei
-- Chunk-Fortschritt: Zeigt die Verarbeitung der URLs im aktuellen Chunk
+- Thread-Fortschritte: Zeigt die Verarbeitung der URLs in jedem aktiven Thread
 
 Der visuelle Modus deaktiviert die normalen Logging-Ausgaben für eine übersichtlichere Darstellung.
+
+### Parallele Verarbeitung (--threads)
+
+Die parallele Verarbeitung mit mehreren Threads beschleunigt die Verarbeitung großer Dateien:
+- Jeder Thread verarbeitet einen eigenen Chunk von URLs
+- Die Ergebnisse werden in temporäre Dateien geschrieben
+- Am Ende werden alle Teilergebnisse zusammengeführt
+- Die Fortschrittsanzeige zeigt den Status jedes Threads separat

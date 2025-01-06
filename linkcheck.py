@@ -402,6 +402,53 @@ async def process_chunk(
     return processed_chunk
 
 
+async def process_chunk_in_thread(
+    chunk_data: Tuple[List[Dict], int],
+    fields: List[str],
+    timeout: float,
+    keep_timeout_urls: bool,
+    follow_redirects: bool,
+    output_base: Path,
+    thread_id: int,
+    timeout_urls: Set[str],
+    stats: Statistics,
+    visual: bool = False,
+) -> None:
+    """
+    Verarbeitet einen Chunk in einem separaten Thread.
+    """
+    chunk, chunk_num = chunk_data
+    chunk_progress = None
+    if visual:
+        chunk_progress = tqdm(
+            total=len(chunk),
+            desc=f"Thread {thread_id}",
+            unit="URLs",
+            position=thread_id + 1,
+            leave=False,
+        )
+
+    processed_chunk = await process_chunk(
+        chunk,
+        fields,
+        False,  # verbose ist immer False in Threads
+        timeout,
+        timeout_urls,
+        keep_timeout_urls,
+        stats,
+        follow_redirects,
+        chunk_progress,
+    )
+
+    # Schreibe Ergebnisse in eine Thread-spezifische Datei
+    output_file = (
+        output_base.parent / f"{output_base.stem}_{chunk_num:05d}{output_base.suffix}"
+    )
+    with open(output_file, "w") as out_f:
+        for item in processed_chunk:
+            out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
 async def process_json_file(
     input_file: Path,
     output_file: Path,
@@ -413,6 +460,7 @@ async def process_json_file(
     keep_timeout_urls: bool = False,
     follow_redirects: bool = False,
     visual: bool = False,
+    num_threads: int = 1,
 ):
     """
     Hauptfunktion zur Verarbeitung der JSON-Lines Datei.
@@ -423,6 +471,7 @@ async def process_json_file(
             logger.debug(f"Zu prüfende Felder: {', '.join(fields)}")
             logger.debug(f"Chunk-Größe: {chunk_size}")
             logger.debug(f"Timeout: {timeout} Sekunden")
+            logger.debug(f"Anzahl Threads: {num_threads}")
             logger.debug(
                 f"Timeout-URLs werden {'behalten' if keep_timeout_urls else 'gelöscht'}"
             )
@@ -436,31 +485,65 @@ async def process_json_file(
         timeout_urls: Set[str] = set()
         stats = Statistics()
 
-        with open(output_file, "w") as out_f:
-            chunks_processed = 0
-            total_items = 0
-            for chunk, chunk_progress in read_jsonl_chunks(
-                input_file, chunk_size, verbose, visual, total_lines
-            ):
-                chunks_processed += 1
-                total_items += len(chunk)
-                processed_chunk = await process_chunk(
-                    chunk,
-                    fields,
-                    verbose,
-                    timeout,
-                    timeout_urls,
-                    keep_timeout_urls,
-                    stats,
-                    follow_redirects,
-                    chunk_progress,
-                )
-                for item in processed_chunk:
-                    out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                if not visual:
-                    logger.info(
-                        f"Chunk {chunks_processed} mit {len(chunk)} Einträgen verarbeitet (Gesamt: {total_items})"
+        # Erstelle eine Queue für die Chunks
+        chunks = []
+        chunk_num = 0
+        for chunk, _ in read_jsonl_chunks(
+            input_file, chunk_size, verbose, False, total_lines
+        ):
+            chunks.append((chunk, chunk_num))
+            chunk_num += 1
+
+        if visual:
+            main_progress = tqdm(
+                total=total_lines,
+                desc="Gesamtfortschritt",
+                unit="Zeilen",
+                position=0,
+                leave=True,
+            )
+
+        # Verarbeite Chunks parallel
+        tasks = []
+        for i in range(0, len(chunks), num_threads):
+            batch = chunks[i : i + num_threads]
+            current_tasks = []
+            for thread_id, chunk_data in enumerate(batch):
+                task = asyncio.create_task(
+                    process_chunk_in_thread(
+                        chunk_data,
+                        fields,
+                        timeout,
+                        keep_timeout_urls,
+                        follow_redirects,
+                        output_file,
+                        thread_id,
+                        timeout_urls,
+                        stats,
+                        visual,
                     )
+                )
+                current_tasks.append(task)
+
+            # Warte auf Abschluss der aktuellen Batch
+            await asyncio.gather(*current_tasks)
+            if visual:
+                main_progress.update(sum(len(chunk) for chunk, _ in batch))
+
+        if visual:
+            main_progress.close()
+
+        # Kombiniere die Teildateien
+        with open(output_file, "w") as out_f:
+            for i in range(chunk_num):
+                part_file = (
+                    output_file.parent
+                    / f"{output_file.stem}_{i:05d}{output_file.suffix}"
+                )
+                if part_file.exists():
+                    with open(part_file, "r") as in_f:
+                        out_f.write(in_f.read())
+                    part_file.unlink()  # Lösche die Teildatei
 
         if timeout_file and timeout_urls:
             with open(timeout_file, "w") as tf:
@@ -526,6 +609,12 @@ def main():
         action="store_true",
         help="Zeigt eine visuelle Fortschrittsanzeige",
     )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Anzahl der parallel arbeitenden Threads (Standard: 1)",
+    )
 
     args = parser.parse_args()
     setup_logging(args.verbose and not args.visual)
@@ -560,6 +649,7 @@ def main():
             args.keep_timeout,
             args.follow_redirects,
             args.visual,
+            args.threads,
         )
     )
 
