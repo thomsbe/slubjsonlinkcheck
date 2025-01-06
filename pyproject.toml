@@ -1,0 +1,12 @@
+[project]
+name = "linkcheck"
+version = "0.1.0"
+description = "Ein Tool zum Überprüfen und Bereinigen von URLs in JSON-Dateien"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

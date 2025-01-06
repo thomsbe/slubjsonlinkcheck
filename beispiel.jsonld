@@ -1,0 +1,5 @@
+{"id": 1, "url": "https://www.google.de", "title": "Gültiger Link"}
+{"id": 2, "url": "keinlink", "title": "Kein Link"}
+{"id": 3, "url": "https://www.google.de/404", "title": "404 Link"}
+{"id": 4, "url": "http://www.slub-dresden.de", "title": "301 Redirect"}
+{"id": 5, "andereurl": "https://www.slub-dresden.de", "title": "Anderes Feld"}
