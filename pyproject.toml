@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.1",
     "tqdm>=4.66.1",
+    "aiofiles>=23.2.1",
 ]
 
 [build-system]

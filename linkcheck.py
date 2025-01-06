@@ -19,7 +19,17 @@ import asyncio  # Für parallele Verarbeitung
 import aiohttp  # Für effiziente HTTP-Anfragen
 import urllib.parse
 import logging
-from typing import Dict, List, Any, Optional, Iterator, Set, DefaultDict, Tuple
+from typing import (
+    Dict,
+    List,
+    Any,
+    Optional,
+    Iterator,
+    Set,
+    DefaultDict,
+    Tuple,
+    AsyncIterator,
+)
 from pathlib import Path
 import sys
 import argparse
@@ -27,6 +37,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from tqdm import tqdm
+import aiofiles
 
 logger = logging.getLogger(__name__)
 
@@ -256,34 +267,26 @@ def count_lines(file_path: Path) -> int:
         return sum(1 for _ in f)
 
 
-def read_jsonl_chunks(
+async def read_jsonl_chunks_async(
     file_path: Path,
     chunk_size: int,
     verbose: bool,
     visual: bool = False,
     total_lines: Optional[int] = None,
-) -> Iterator[Tuple[List[Dict], Optional[tqdm]]]:
+) -> AsyncIterator[Tuple[List[Dict], Optional[tqdm]]]:
     """
-    Liest die JSON-Lines Datei in Chunks (Teilstücken).
-    Bei aktivierter visueller Anzeige wird ein tqdm-Objekt für den Chunk zurückgegeben.
+    Asynchroner Generator für JSON-Lines Chunks.
+    Lädt Chunks erst, wenn sie benötigt werden, um Speicher zu sparen.
     """
     if verbose and not visual:
         logger.debug(f"Beginne Einlesen der Datei {file_path}")
 
-    chunk_progress = None
-    if visual:
-        # Fortschrittsbalken für die Gesamtverarbeitung
-        main_progress = tqdm(
-            total=total_lines,
-            desc="Gesamtfortschritt",
-            unit="Zeilen",
-            position=0,
-            leave=True,
-        )
+    chunk: List[Dict] = []
+    line_num = 0
 
-    with open(file_path, "r") as f:
-        chunk = []
-        for line_num, line in enumerate(f, 1):
+    async with aiofiles.open(file_path, mode="r") as f:
+        async for line in f:
+            line_num += 1
             try:
                 obj = json.loads(line.strip())
                 chunk.append(obj)
@@ -292,18 +295,7 @@ def read_jsonl_chunks(
                         logger.debug(
                             f"Chunk mit {len(chunk)} Objekten geladen (bis Zeile {line_num})"
                         )
-                    if visual:
-                        if chunk_progress:
-                            chunk_progress.close()
-                        chunk_progress = tqdm(
-                            total=len(chunk),
-                            desc="Aktueller Chunk",
-                            unit="URLs",
-                            position=1,
-                            leave=False,
-                        )
-                        main_progress.update(len(chunk))
-                    yield chunk, chunk_progress
+                    yield chunk, None
                     chunk = []
             except json.JSONDecodeError as e:
                 if not visual:
@@ -311,22 +303,11 @@ def read_jsonl_chunks(
                         f"Fehler beim Parsen der JSON-Line {line_num}: {str(e)}"
                     )
                 continue
-        if chunk:
+
+        if chunk:  # Letzter Chunk
             if verbose and not visual:
                 logger.debug(f"Letzter Chunk mit {len(chunk)} Objekten geladen")
-            if visual:
-                if chunk_progress:
-                    chunk_progress.close()
-                chunk_progress = tqdm(
-                    total=len(chunk),
-                    desc="Aktueller Chunk",
-                    unit="URLs",
-                    position=1,
-                    leave=False,
-                )
-                main_progress.update(len(chunk))
-                main_progress.close()
-            yield chunk, chunk_progress
+            yield chunk, None
 
 
 async def process_chunk(
@@ -553,15 +534,7 @@ async def process_json_file(
         total_lines = count_lines(input_file) if visual else None
         timeout_urls: Set[str] = set()
         stats = Statistics()
-
-        # Erstelle eine Queue für die Chunks
-        chunks = []
         chunk_num = 0
-        for chunk, _ in read_jsonl_chunks(
-            input_file, chunk_size, verbose, False, total_lines
-        ):
-            chunks.append((chunk, chunk_num))
-            chunk_num += 1
 
         if visual:
             main_progress = tqdm(
@@ -572,32 +545,52 @@ async def process_json_file(
                 leave=True,
             )
 
-        # Verarbeite Chunks parallel
-        tasks = []
-        for i in range(0, len(chunks), num_threads):
-            batch = chunks[i : i + num_threads]
-            current_tasks = []
-            for thread_id, chunk_data in enumerate(batch):
-                task = asyncio.create_task(
-                    process_chunk_in_thread(
-                        chunk_data,
-                        fields,
-                        timeout,
-                        keep_timeout_urls,
-                        follow_redirects,
-                        output_file,
-                        thread_id,
-                        timeout_urls,
-                        stats,
-                        visual,
+        # Verarbeite Chunks in Batches von num_threads
+        active_tasks: List[asyncio.Task] = []
+        async for chunk, _ in read_jsonl_chunks_async(
+            input_file, chunk_size, verbose, False, total_lines
+        ):
+            # Erstelle Task für aktuellen Chunk
+            task = asyncio.create_task(
+                process_chunk_in_thread(
+                    (chunk, chunk_num),
+                    fields,
+                    timeout,
+                    keep_timeout_urls,
+                    follow_redirects,
+                    output_file,
+                    len(active_tasks),
+                    timeout_urls,
+                    stats,
+                    visual,
+                )
+            )
+            active_tasks.append(task)
+            chunk_num += 1
+
+            # Wenn wir genug Tasks haben oder es der letzte Chunk ist
+            if len(active_tasks) >= num_threads:
+                # Warte auf Abschluss aller aktiven Tasks
+                await asyncio.gather(*active_tasks)
+                if visual:
+                    main_progress.update(
+                        sum(
+                            len(c[0])
+                            for c in [t.result() for t in active_tasks if t.done()]
+                        )
+                    )
+                active_tasks = []
+
+        # Warte auf verbleibende Tasks
+        if active_tasks:
+            await asyncio.gather(*active_tasks)
+            if visual:
+                main_progress.update(
+                    sum(
+                        len(c[0])
+                        for c in [t.result() for t in active_tasks if t.done()]
                     )
                 )
-                current_tasks.append(task)
-
-            # Warte auf Abschluss der aktuellen Batch
-            await asyncio.gather(*current_tasks)
-            if visual:
-                main_progress.update(sum(len(chunk) for chunk, _ in batch))
 
         if visual:
             main_progress.close()
