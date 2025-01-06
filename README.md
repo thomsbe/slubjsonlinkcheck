@@ -28,6 +28,8 @@ python linkcheck.py input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
 - `--timeout`: Optional: Timeout in Sekunden für URL-Überprüfungen (Standard: 10.0)
 - `--timeout-file`: Optional: Datei zum Speichern von URLs, die ein Timeout verursacht haben
 - `--keep-timeout`: Optional: URLs bei Timeout behalten statt zu löschen
+- `--follow-redirects`: Optional: Bei Weiterleitungen (301/302) die neue URL übernehmen (Standard: Original-URL behalten)
+- `--visual`: Optional: Zeigt eine visuelle Fortschrittsanzeige statt Logging-Ausgaben
 
 ### Beispiele
 
@@ -51,6 +53,11 @@ Timeout-URLs behalten und loggen:
 python linkcheck.py daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt --keep-timeout
 ```
 
+Weiterleitungen folgen und visuelle Fortschrittsanzeige:
+```bash
+python linkcheck.py daten.jsonl url_feld --follow-redirects --visual
+```
+
 ## Funktionsweise
 
 1. Das Tool liest die JSON-Lines Datei zeilenweise ein
@@ -58,7 +65,7 @@ python linkcheck.py daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.t
 3. Prüft die angegebenen Felder auf gültige URLs
 4. Überprüft die Erreichbarkeit der URLs:
    - Status 200: URL wird beibehalten
-   - Status 301: Neue URL wird verwendet
+   - Status 301/302: URL wird beibehalten oder aktualisiert (mit --follow-redirects)
    - Status 404: Feld wird gelöscht
    - Timeout: Feld wird gelöscht (oder behalten mit --keep-timeout) und URL wird optional in Timeout-Datei geschrieben
    - Ungültige URL: Feld wird gelöscht
@@ -77,3 +84,11 @@ Im Verbose-Modus gibt das Tool detaillierte Informationen aus:
 - Information ob Timeout-URLs behalten oder gelöscht werden
 - Änderungen an den Feldern
 - Fortschritt der Verarbeitung
+
+### Visueller Modus (--visual)
+
+Im visuellen Modus zeigt das Tool zwei Fortschrittsbalken:
+- Gesamtfortschritt: Zeigt die Verarbeitung aller Zeilen der Eingabedatei
+- Chunk-Fortschritt: Zeigt die Verarbeitung der URLs im aktuellen Chunk
+
+Der visuelle Modus deaktiviert die normalen Logging-Ausgaben für eine übersichtlichere Darstellung.
