@@ -342,6 +342,7 @@ async def process_chunk(
 ) -> List[Dict[str, Any]]:
     """
     Verarbeitet einen Chunk von JSON-Objekten parallel.
+    Unterstützt sowohl einzelne URLs als auch Arrays von URLs.
     """
     processed_chunk = []
     if verbose and not chunk_progress:
@@ -354,9 +355,77 @@ async def process_chunk(
             for field in fields:
                 if field in processed_item:
                     value = processed_item[field]
-                    if isinstance(value, str) and is_valid_url(value):
+
+                    # Verarbeite Arrays von URLs
+                    if isinstance(value, list):
+                        valid_urls = []
+                        for url in value:
+                            if isinstance(url, str) and is_valid_url(url):
+                                if verbose and not chunk_progress:
+                                    logger.debug(
+                                        f"Prüfe URL aus Array in Feld '{field}': {url}"
+                                    )
+                                (
+                                    is_valid,
+                                    new_url,
+                                    is_timeout,
+                                    status_code,
+                                ) = await check_url(
+                                    session,
+                                    url,
+                                    verbose and not chunk_progress,
+                                    timeout,
+                                )
+                                stats.add_url_check(
+                                    field,
+                                    url,
+                                    is_valid,
+                                    new_url,
+                                    is_timeout,
+                                    status_code,
+                                )
+
+                                if is_timeout:
+                                    timeout_urls.add(url)
+                                    if verbose and not chunk_progress:
+                                        logger.debug(
+                                            f"URL {url} zum Timeout-Log hinzugefügt"
+                                        )
+                                        if keep_timeout_urls:
+                                            logger.debug(
+                                                f"URL {url} wird trotz Timeout behalten"
+                                            )
+                                            valid_urls.append(url)
+                                        else:
+                                            logger.debug(
+                                                f"URL {url} wird wegen Timeout gelöscht"
+                                            )
+                                elif not is_valid:
+                                    if verbose and not chunk_progress:
+                                        logger.debug(
+                                            f"Lösche ungültige URL aus Array: {url}"
+                                        )
+                                elif new_url != url and follow_redirects:
+                                    if verbose and not chunk_progress:
+                                        logger.debug(
+                                            f"Aktualisiere URL im Array von {url} zu {new_url}"
+                                        )
+                                    valid_urls.append(new_url)
+                                else:
+                                    valid_urls.append(url)
+
+                        # Entferne das Feld wenn das Array leer ist
+                        if valid_urls:
+                            processed_item[field] = valid_urls
+                        else:
+                            del processed_item[field]
+
+                    # Verarbeite einzelne URL
+                    elif isinstance(value, str) and is_valid_url(value):
                         if verbose and not chunk_progress:
-                            logger.debug(f"Prüfe Feld '{field}' mit URL: {value}")
+                            logger.debug(
+                                f"Prüfe einzelne URL in Feld '{field}': {value}"
+                            )
                         is_valid, new_url, is_timeout, status_code = await check_url(
                             session, value, verbose and not chunk_progress, timeout
                         )

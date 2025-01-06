@@ -69,14 +69,18 @@ python linkcheck.py daten.jsonl url_feld --threads 5 --visual
 1. Das Tool liest die JSON-Lines Datei zeilenweise ein
 2. Verarbeitet die Daten in Chunks für optimale Performance
 3. Verteilt die Chunks auf die angegebene Anzahl von Threads
-4. Prüft die angegebenen Felder auf gültige URLs
+4. Prüft die angegebenen Felder auf gültige URLs:
+   - Einzelne URL-Strings werden direkt geprüft
+   - Arrays von URLs werden Element für Element geprüft
 5. Überprüft die Erreichbarkeit der URLs:
    - Status 200: URL wird beibehalten
    - Status 301/302: URL wird beibehalten oder aktualisiert (mit --follow-redirects)
-   - Status 404: Feld wird gelöscht
-   - Timeout: Feld wird gelöscht (oder behalten mit --keep-timeout) und URL wird optional in Timeout-Datei geschrieben
-   - Ungültige URL: Feld wird gelöscht
-6. Speichert das Ergebnis zeilenweise in der Ausgabedatei
+   - Status 404: URL wird gelöscht (bei Arrays: aus dem Array entfernt)
+   - Timeout: URL wird gelöscht oder behalten (mit --keep-timeout) und optional in Timeout-Datei geschrieben
+   - Ungültige URL: URL wird gelöscht (bei Arrays: aus dem Array entfernt)
+6. Speichert das Ergebnis:
+   - Einzelne URLs: Feld wird gelöscht wenn URL ungültig
+   - Arrays: Leere Arrays werden komplett gelöscht, sonst bleiben gültige URLs erhalten
 
 Die Verarbeitung erfolgt parallel für optimale Leistung bei großen Dateien. Fehlerhafte JSON-Lines werden übersprungen und geloggt.
 
@@ -85,11 +89,11 @@ Die Verarbeitung erfolgt parallel für optimale Leistung bei großen Dateien. Fe
 Im Verbose-Modus gibt das Tool detaillierte Informationen aus:
 - Start und Ende der Verarbeitung
 - Einlesen der Datei und Chunk-Informationen
-- Details zu jeder URL-Überprüfung
+- Details zu jeder URL-Überprüfung (einzeln oder im Array)
 - Status-Codes und Weiterleitungen
 - Timeout-Ereignisse und betroffene URLs
 - Information ob Timeout-URLs behalten oder gelöscht werden
-- Änderungen an den Feldern
+- Änderungen an den Feldern und Arrays
 - Fortschritt der Verarbeitung
 
 ### Visueller Modus (--visual)
