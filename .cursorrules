@@ -3,3 +3,6 @@
 1. Always respond in german language.
 2. Use Python 3.12 as the programming language.
 3. Use uv for managing the project.
+4. Use inline comments for explaining the code. Explain for non technical people.
+5. Use file "technical.md" for technical information. Use this file for all technical decisions. Keep this file up to date.
+6. Keep the readme up to date.
