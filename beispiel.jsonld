@@ -3,3 +3,5 @@
 {"id": 3, "url": "https://www.google.de/404", "title": "404 Link"}
 {"id": 4, "url": "http://www.slub-dresden.de", "title": "301 Redirect"}
 {"id": 5, "andereurl": "https://www.slub-dresden.de", "title": "Anderes Feld"}
+{"id": 6, "url": ["https://www.google.de/404", "https://www.google.de"], "title": "404 Link + 200 Link"}
+{"id": 7, "url": ["https://www.google.de/404", "https://www.google.de/404"], "title": "404 Link + 404 Link"}
