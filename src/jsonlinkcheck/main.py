@@ -24,7 +24,6 @@ from typing import (
     List,
     Any,
     Optional,
-    Iterator,
     Set,
     DefaultDict,
     Tuple,
