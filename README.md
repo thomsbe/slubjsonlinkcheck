@@ -1,13 +1,39 @@
-# LinkCheck
+# JsonLinkCheck
 
 Ein Tool zum Überprüfen und Bereinigen von URLs in JSON-Lines Dateien.
 
 ## Installation
 
+Sie können das Tool auf zwei Arten installieren:
+
+### Mit uv (empfohlen)
+
+Zuerst müssen Sie uv installieren:
+
+#### Linux/MacOS
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e .
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+#### Windows (PowerShell)
+```powershell
+(Invoke-WebRequest -Uri "https://astral.sh/uv/install.ps1" -UseBasicParsing).Content | pwsh -Command -
+```
+
+#### Alternativ mit pip
+```bash
+pip install uv
+```
+
+Nach der Installation von uv können Sie JsonLinkCheck installieren:
+```bash
+uv tool install slubjsonlinkcheck
+```
+
+### Mit pip
+
+```bash
+pip install slubjsonlinkcheck
 ```
 
 ## Verwendung
@@ -15,7 +41,7 @@ uv pip install -e .
 Das Tool wird über die Kommandozeile gesteuert und verarbeitet JSON-Lines Dateien (eine JSON-Objekt pro Zeile):
 
 ```bash
-python linkcheck.py input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
+jsonlinkcheck input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
 ```
 
 ### Parameter
@@ -36,32 +62,52 @@ python linkcheck.py input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
 
 Standard-Modus:
 ```bash
-python linkcheck.py daten.jsonl url_feld beschreibungs_url --suffix _bereinigt
+jsonlinkcheck daten.jsonl url_feld beschreibungs_url --suffix _bereinigt
 ```
 
 Ausführlicher Modus mit detaillierten Ausgaben:
 ```bash
-python linkcheck.py daten.jsonl url_feld beschreibungs_url -v
+jsonlinkcheck daten.jsonl url_feld beschreibungs_url -v
 ```
 
 Mit angepasstem Timeout und Timeout-Logging:
 ```bash
-python linkcheck.py daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt
+jsonlinkcheck daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt
 ```
 
 Timeout-URLs behalten und loggen:
 ```bash
-python linkcheck.py daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt --keep-timeout
+jsonlinkcheck daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt --keep-timeout
 ```
 
 Weiterleitungen folgen und visuelle Fortschrittsanzeige:
 ```bash
-python linkcheck.py daten.jsonl url_feld --follow-redirects --visual
+jsonlinkcheck daten.jsonl url_feld --follow-redirects --visual
 ```
 
 Parallele Verarbeitung mit mehreren Threads:
 ```bash
-python linkcheck.py daten.jsonl url_feld --threads 5 --visual
+jsonlinkcheck daten.jsonl url_feld --threads 5 --visual
+```
+
+## Entwicklung
+
+### Setup der Entwicklungsumgebung
+
+```bash
+# Repository klonen
+git clone https://github.com/thomsbe/slubjsonlinkcheck.git
+cd slubjsonlinkcheck
+
+# Python 3.12 oder höher wird benötigt
+python --version
+
+# Virtuelle Umgebung erstellen und aktivieren
+uv venv
+source .venv/bin/activate
+
+# Entwicklungsabhängigkeiten installieren
+uv pip install -e .
 ```
 
 ## Funktionsweise
