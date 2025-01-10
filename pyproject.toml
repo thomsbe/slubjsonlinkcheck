@@ -1,6 +1,6 @@
 [project]
 name = "slubjsonlinkcheck"
-version = "0.2.0"
+version = "0.9.0"
 description = "Ein Tool zum Überprüfen und Bereinigen von URLs in JSON-Lines Dateien"
 readme = "README.md"
 requires-python = ">=3.12"

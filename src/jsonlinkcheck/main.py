@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-LinkCheck - Ein Werkzeug zur Überprüfung und Bereinigung von URLs in JSON-Lines Dateien
+JsonLinkCheck - Ein Werkzeug zur Überprüfung und Bereinigung von URLs in JSON-Lines Dateien
 
 Dieses Programm wurde entwickelt, um große Mengen von URLs in JSON-Dateien zu überprüfen
 und zu bereinigen. Es ist besonders nützlich für:
@@ -15,20 +15,11 @@ zu sparen.
 """
 
 import json
-import asyncio  # Für parallele Verarbeitung
-import aiohttp  # Für effiziente HTTP-Anfragen
+import asyncio
+import aiohttp
 import urllib.parse
 import logging
-from typing import (
-    Dict,
-    List,
-    Any,
-    Optional,
-    Set,
-    DefaultDict,
-    Tuple,
-    AsyncIterator,
-)
+from typing import Dict, List, Any, Optional, Set, DefaultDict, Tuple, AsyncIterator
 from pathlib import Path
 import sys
 import argparse
@@ -37,8 +28,41 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from tqdm import tqdm
 import aiofiles
+import tempfile
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Globale Konstanten
+MAX_RETRIES = 3  # Maximale Anzahl von Wiederholungsversuchen bei Netzwerkfehlern
+TEMP_DIR_PREFIX = "jsonlinkcheck_"  # Präfix für temporäre Verzeichnisse
+
+
+@dataclass
+class ProcessingError(Exception):
+    """Basisklasse für Verarbeitungsfehler"""
+
+    message: str
+    details: Optional[Dict] = None
+
+
+class NetworkError(ProcessingError):
+    """Fehler bei Netzwerkoperationen"""
+
+    pass
+
+
+class FileError(ProcessingError):
+    """Fehler bei Dateioperationen"""
+
+    pass
+
+
+class ValidationError(ProcessingError):
+    """Fehler bei der Validierung"""
+
+    pass
 
 
 @dataclass
@@ -62,6 +86,9 @@ class FieldStats:
     domains: DefaultDict[str, int] = field(
         default_factory=lambda: defaultdict(int)
     )  # Zählt URLs pro Domain
+    redirects_map: List[Tuple[str, str]] = field(
+        default_factory=list
+    )  # Liste von (source, target) URLs
 
 
 @dataclass
@@ -196,68 +223,71 @@ def is_valid_url(url: str) -> bool:
 
 
 async def check_url(
-    session: aiohttp.ClientSession, url: str, verbose: bool, timeout: float
+    session: aiohttp.ClientSession,
+    url: str,
+    verbose: bool,
+    timeout: float,
+    retries: int = MAX_RETRIES,
 ) -> tuple[bool, Optional[str], bool, Optional[int]]:
     """
-    Überprüft eine URL auf Erreichbarkeit.
-
-    Diese Funktion ist das Herzstück der URL-Prüfung. Sie:
-    - Versucht die URL aufzurufen
-    - Erkennt Weiterleitungen (301, 302)
-    - Behandelt Timeouts
-    - Identifiziert verschiedene Fehlerzustände
-
-    Returns: (is_valid, new_url, is_timeout, status_code)
-    - is_valid: Gibt an, ob die URL gültig und erreichbar ist
-    - new_url: Bei Weiterleitung die neue URL
-    - is_timeout: Ob ein Timeout aufgetreten ist
-    - status_code: Der HTTP-Status-Code für detailliertere Fehleranalyse
+    Überprüft eine URL auf Erreichbarkeit mit Wiederholungsversuchen.
     """
-    try:
-        if verbose:
-            logger.debug(f"Prüfe URL: {url}")
-        timeout_obj = aiohttp.ClientTimeout(total=timeout)
-        async with session.get(
-            url, allow_redirects=False, timeout=timeout_obj
-        ) as response:
-            status = response.status
-            if status == 200:
-                if verbose:
-                    logger.debug(f"URL {url} ist erreichbar (Status 200)")
-                return True, url, False, status
-            elif status in (301, 302):
-                new_location = response.headers.get("Location")
-                if new_location:
+    for attempt in range(retries):
+        try:
+            if verbose:
+                logger.debug(f"Prüfe URL: {url} (Versuch {attempt + 1}/{retries})")
+            timeout_obj = aiohttp.ClientTimeout(total=timeout)
+            async with session.get(
+                url, allow_redirects=False, timeout=timeout_obj
+            ) as response:
+                status = response.status
+                if status == 200:
+                    if verbose:
+                        logger.debug(f"URL {url} ist erreichbar (Status 200)")
+                    return True, url, False, status
+                elif status in (301, 302):
+                    new_location = response.headers.get("Location")
+                    if new_location:
+                        if verbose:
+                            logger.debug(
+                                f"URL {url} wurde zu {new_location} weitergeleitet (Status {status})"
+                            )
+                        return True, new_location, False, status
                     if verbose:
                         logger.debug(
-                            f"URL {url} wurde zu {new_location} weitergeleitet (Status {status})"
+                            f"URL {url} hat Status {status}, aber keine neue Location"
                         )
-                    return True, new_location, False, status
-                if verbose:
-                    logger.debug(
-                        f"URL {url} hat Status {status}, aber keine neue Location"
-                    )
-                return (
-                    True,
-                    url,
-                    False,
-                    status,
-                )  # Weiterleitung ohne Ziel gilt trotzdem als gültig
-            elif status == 404:
-                if verbose:
-                    logger.debug(f"URL {url} ist nicht erreichbar (Status 404)")
-                return False, None, False, status
-            else:
-                if verbose:
-                    logger.debug(f"URL {url} hat unerwarteten Status {status}")
-                return False, None, False, status
-    except asyncio.TimeoutError:
-        if verbose:
-            logger.debug(f"Timeout bei URL {url}")
-        return False, None, True, None
-    except Exception as e:
-        logger.error(f"Fehler beim Prüfen der URL {url}: {str(e)}")
-        return False, None, False, None
+                    return True, url, False, status
+                elif status == 404:
+                    if verbose:
+                        logger.debug(f"URL {url} ist nicht erreichbar (Status 404)")
+                    return False, None, False, status
+                else:
+                    if verbose:
+                        logger.debug(f"URL {url} hat unerwarteten Status {status}")
+                    return False, None, False, status
+        except asyncio.TimeoutError:
+            if verbose:
+                logger.debug(f"Timeout bei URL {url} (Versuch {attempt + 1}/{retries})")
+            if attempt == retries - 1:
+                return False, None, True, None
+        except aiohttp.ClientError as e:
+            if verbose:
+                logger.debug(
+                    f"Netzwerkfehler bei URL {url}: {str(e)} (Versuch {attempt + 1}/{retries})"
+                )
+            if attempt == retries - 1:
+                raise NetworkError(f"Netzwerkfehler bei URL {url}", {"error": str(e)})
+        except Exception as e:
+            raise ProcessingError(
+                f"Unerwarteter Fehler bei URL {url}", {"error": str(e)}
+            )
+
+        # Exponentielles Backoff bei Wiederholungsversuchen
+        if attempt < retries - 1:
+            await asyncio.sleep(2**attempt)
+
+    return False, None, False, None
 
 
 def count_lines(file_path: Path) -> int:
@@ -315,7 +345,7 @@ async def process_chunk(
     verbose: bool,
     timeout: float,
     timeout_urls: Set[str],
-    keep_timeout_urls: bool,
+    delete_timeouts: bool,
     stats: Statistics,
     follow_redirects: bool,
     chunk_progress: Optional[tqdm] = None,
@@ -371,14 +401,14 @@ async def process_chunk(
                                         logger.debug(
                                             f"URL {url} zum Timeout-Log hinzugefügt"
                                         )
-                                        if keep_timeout_urls:
+                                        if not delete_timeouts:
                                             logger.debug(
-                                                f"URL {url} wird trotz Timeout behalten"
+                                                f"URL {url} wird behalten (Standard-Verhalten)"
                                             )
                                             valid_urls.append(url)
                                         else:
                                             logger.debug(
-                                                f"URL {url} wird wegen Timeout gelöscht"
+                                                f"URL {url} wird gelöscht (--delete-timeouts aktiv)"
                                             )
                                 elif not is_valid:
                                     if verbose and not chunk_progress:
@@ -391,6 +421,10 @@ async def process_chunk(
                                             f"Aktualisiere URL im Array von {url} zu {new_url}"
                                         )
                                     valid_urls.append(new_url)
+                                    # Speichere die Weiterleitung
+                                    stats.field_stats[field].redirects_map.append(
+                                        (url, new_url)
+                                    )
                                 else:
                                     valid_urls.append(url)
 
@@ -417,15 +451,15 @@ async def process_chunk(
                             timeout_urls.add(value)
                             if verbose and not chunk_progress:
                                 logger.debug(f"URL {value} zum Timeout-Log hinzugefügt")
-                                if keep_timeout_urls:
+                                if not delete_timeouts:
                                     logger.debug(
-                                        f"URL {value} wird trotz Timeout behalten"
+                                        f"URL {value} wird behalten (Standard-Verhalten)"
                                     )
                                 else:
                                     logger.debug(
-                                        f"URL {value} wird wegen Timeout gelöscht"
+                                        f"URL {value} wird gelöscht (--delete-timeouts aktiv)"
                                     )
-                            if not keep_timeout_urls:
+                            if delete_timeouts:
                                 del processed_item[field]
                         elif not is_valid:
                             if verbose and not chunk_progress:
@@ -439,6 +473,10 @@ async def process_chunk(
                                     f"Aktualisiere URL in Feld '{field}' von {value} zu {new_url}"
                                 )
                             processed_item[field] = new_url
+                            # Speichere die Weiterleitung
+                            stats.field_stats[field].redirects_map.append(
+                                (value, new_url)
+                            )
                     else:
                         if verbose and not chunk_progress and isinstance(value, str):
                             logger.debug(
@@ -455,9 +493,9 @@ async def process_chunk_in_thread(
     chunk_data: Tuple[List[Dict], int],
     fields: List[str],
     timeout: float,
-    keep_timeout_urls: bool,
+    delete_timeouts: bool,
     follow_redirects: bool,
-    output_base: Path,
+    output_file: Path,
     thread_id: int,
     timeout_urls: Set[str],
     stats: Statistics,
@@ -483,16 +521,13 @@ async def process_chunk_in_thread(
         False,  # verbose ist immer False in Threads
         timeout,
         timeout_urls,
-        keep_timeout_urls,
+        delete_timeouts,
         stats,
         follow_redirects,
         chunk_progress,
     )
 
     # Schreibe Ergebnisse in eine Thread-spezifische Datei
-    output_file = (
-        output_base.parent / f"{output_base.stem}_{chunk_num:05d}{output_base.suffix}"
-    )
     with open(output_file, "w") as out_f:
         for item in processed_chunk:
             out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
@@ -506,29 +541,41 @@ async def process_json_file(
     verbose: bool = False,
     timeout: float = 10.0,
     timeout_file: Optional[Path] = None,
-    keep_timeout_urls: bool = False,
+    delete_timeouts: bool = False,
     follow_redirects: bool = False,
+    redirects_file: Optional[Path] = None,
     visual: bool = False,
     num_threads: int = 1,
 ):
     """
     Hauptfunktion zur Verarbeitung der JSON-Lines Datei.
     """
+    temp_dir = None
     try:
         if verbose and not visual:
-            logger.debug(f"Starte Verarbeitung von {input_file}")
+            logger.debug(f"Verarbeite Datei: {input_file.name}")
+            logger.debug(f"Ausgabedatei: {output_file.name}")
             logger.debug(f"Zu prüfende Felder: {', '.join(fields)}")
             logger.debug(f"Chunk-Größe: {chunk_size}")
             logger.debug(f"Timeout: {timeout} Sekunden")
             logger.debug(f"Anzahl Threads: {num_threads}")
             logger.debug(
-                f"Timeout-URLs werden {'behalten' if keep_timeout_urls else 'gelöscht'}"
+                f"Timeout-URLs werden {'gelöscht' if delete_timeouts else 'behalten'}"
             )
             logger.debug(
                 f"Weiterleitungen werden {'verfolgt' if follow_redirects else 'beibehalten'}"
             )
             if timeout_file:
-                logger.debug(f"Timeout-URLs werden in {timeout_file} gespeichert")
+                logger.debug(f"Timeout-URLs werden in {timeout_file.name} gespeichert")
+            if redirects_file:
+                logger.debug(
+                    f"Weiterleitungen werden in {redirects_file.name} gespeichert"
+                )
+
+        # Erstelle temporäres Verzeichnis für Thread-Ausgaben
+        temp_dir = Path(tempfile.mkdtemp(prefix=TEMP_DIR_PREFIX))
+        if verbose and not visual:
+            logger.debug(f"Temporäres Verzeichnis erstellt: {temp_dir}")
 
         total_lines = count_lines(input_file) if visual else None
         timeout_urls: Set[str] = set()
@@ -555,9 +602,9 @@ async def process_json_file(
                     (chunk, chunk_num),
                     fields,
                     timeout,
-                    keep_timeout_urls,
+                    delete_timeouts,
                     follow_redirects,
-                    output_file,
+                    temp_dir / f"chunk_{chunk_num:05d}.jsonl",
                     len(active_tasks),
                     timeout_urls,
                     stats,
@@ -595,16 +642,17 @@ async def process_json_file(
             main_progress.close()
 
         # Kombiniere die Teildateien
+        if verbose and not visual:
+            logger.debug(f"Kombiniere {chunk_num} Teildateien zu {output_file.name}")
+
         with open(output_file, "w") as out_f:
             for i in range(chunk_num):
-                part_file = (
-                    output_file.parent
-                    / f"{output_file.stem}_{i:05d}{output_file.suffix}"
-                )
-                if part_file.exists():
-                    with open(part_file, "r") as in_f:
+                chunk_file = temp_dir / f"chunk_{i:05d}.jsonl"
+                if chunk_file.exists():
+                    if verbose and not visual:
+                        logger.debug(f"Füge Teildatei hinzu: {chunk_file.name}")
+                    with open(chunk_file, "r") as in_f:
                         out_f.write(in_f.read())
-                    part_file.unlink()  # Lösche die Teildatei
 
         if timeout_file and timeout_urls:
             with open(timeout_file, "w") as tf:
@@ -612,15 +660,51 @@ async def process_json_file(
                     tf.write(f"{url}\n")
             if verbose and not visual:
                 logger.debug(
-                    f"{len(timeout_urls)} Timeout-URLs in {timeout_file} gespeichert"
+                    f"{len(timeout_urls)} Timeout-URLs in {timeout_file.name} gespeichert"
                 )
+
+        # Speichere Weiterleitungen
+        if redirects_file:
+            redirects_list = []
+            for field_stat in stats.field_stats.values():
+                redirects_list.extend(field_stat.redirects_map)
+
+            if redirects_list:
+                with open(redirects_file, "w") as rf:
+                    for source, target in sorted(set(redirects_list)):
+                        rf.write(f"{source};{target}\n")
+                if verbose and not visual:
+                    logger.debug(
+                        f"{len(redirects_list)} Weiterleitungen in {redirects_file.name} gespeichert"
+                    )
 
         if not visual:
             stats.print_summary(verbose)
 
-    except Exception as e:
-        logger.error(f"Fehler bei der Verarbeitung: {str(e)}")
+    except FileError as e:
+        logger.error(f"Dateifehler: {e.message}")
+        if e.details:
+            logger.debug(f"Details: {e.details}")
         sys.exit(1)
+    except NetworkError as e:
+        logger.error(f"Netzwerkfehler: {e.message}")
+        if e.details:
+            logger.debug(f"Details: {e.details}")
+        sys.exit(1)
+    except ProcessingError as e:
+        logger.error(f"Verarbeitungsfehler: {e.message}")
+        if e.details:
+            logger.debug(f"Details: {e.details}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Unerwarteter Fehler: {str(e)}")
+        sys.exit(1)
+    finally:
+        # Aufräumen
+        if temp_dir and temp_dir.exists():
+            if verbose and not visual:
+                logger.debug(f"Räume temporäres Verzeichnis auf: {temp_dir}")
+            shutil.rmtree(temp_dir)
 
 
 def main():
@@ -656,14 +740,19 @@ def main():
         help="Datei zum Speichern von URLs, die ein Timeout verursacht haben",
     )
     parser.add_argument(
-        "--keep-timeout",
+        "--delete-timeouts",
         action="store_true",
-        help="URLs bei Timeout behalten statt zu löschen",
+        help="URLs bei Timeout löschen statt behalten",
     )
     parser.add_argument(
         "--follow-redirects",
         action="store_true",
         help="Bei Weiterleitungen (301/302) die neue URL übernehmen",
+    )
+    parser.add_argument(
+        "--redirects-file",
+        type=str,
+        help="Datei zum Speichern von Weiterleitungen im Format 'quelle;ziel'",
     )
     parser.add_argument(
         "--visual",
@@ -690,6 +779,7 @@ def main():
     )
 
     timeout_path = Path(args.timeout_file) if args.timeout_file else None
+    redirects_path = Path(args.redirects_file) if args.redirects_file else None
 
     if args.verbose and not args.visual:
         logger.debug("Programmstart")
@@ -697,6 +787,8 @@ def main():
         logger.debug(f"Ausgabedatei: {output_path}")
         if timeout_path:
             logger.debug(f"Timeout-Datei: {timeout_path}")
+        if redirects_path:
+            logger.debug(f"Weiterleitungs-Datei: {redirects_path}")
 
     asyncio.run(
         process_json_file(
@@ -707,8 +799,9 @@ def main():
             args.verbose,
             args.timeout,
             timeout_path,
-            args.keep_timeout,
+            args.delete_timeouts,
             args.follow_redirects,
+            redirects_path,
             args.visual,
             args.threads,
         )

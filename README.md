@@ -53,16 +53,27 @@ jsonlinkcheck input.jsonl feldname1 feldname2 [feldname3 ...] [optionen]
 - `-v, --verbose`: Optional: Aktiviert ausführliche Ausgaben zur Verarbeitung
 - `--timeout`: Optional: Timeout in Sekunden für URL-Überprüfungen (Standard: 10.0)
 - `--timeout-file`: Optional: Datei zum Speichern von URLs, die ein Timeout verursacht haben
-- `--keep-timeout`: Optional: URLs bei Timeout behalten statt zu löschen
-- `--follow-redirects`: Optional: Bei Weiterleitungen (301/302) die neue URL übernehmen (Standard: Original-URL behalten)
+- `--delete-timeouts`: Optional: URLs bei Timeout löschen (Standard: URLs werden behalten)
+- `--follow-redirects`: Optional: Bei Weiterleitungen (301/302) die neue URL übernehmen
+- `--redirects-file`: Optional: Datei zum Speichern von Weiterleitungen im Format 'quelle;ziel'
 - `--visual`: Optional: Zeigt eine visuelle Fortschrittsanzeige statt Logging-Ausgaben
 - `--threads`: Optional: Anzahl der parallel arbeitenden Threads (Standard: 1)
 
 ### Beispiele
 
-Standard-Modus:
+Standard-Modus (behält Timeout-URLs):
 ```bash
 jsonlinkcheck daten.jsonl url_feld beschreibungs_url --suffix _bereinigt
+```
+
+Timeout-URLs löschen:
+```bash
+jsonlinkcheck daten.jsonl url_feld --delete-timeouts
+```
+
+Weiterleitungen verfolgen und in Datei speichern:
+```bash
+jsonlinkcheck daten.jsonl url_feld --follow-redirects --redirects-file redirects.txt
 ```
 
 Ausführlicher Modus mit detaillierten Ausgaben:
@@ -73,16 +84,6 @@ jsonlinkcheck daten.jsonl url_feld beschreibungs_url -v
 Mit angepasstem Timeout und Timeout-Logging:
 ```bash
 jsonlinkcheck daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt
-```
-
-Timeout-URLs behalten und loggen:
-```bash
-jsonlinkcheck daten.jsonl url_feld --timeout 5.0 --timeout-file timeouts.txt --keep-timeout
-```
-
-Weiterleitungen folgen und visuelle Fortschrittsanzeige:
-```bash
-jsonlinkcheck daten.jsonl url_feld --follow-redirects --visual
 ```
 
 Parallele Verarbeitung mit mehreren Threads:
@@ -157,3 +158,50 @@ Die parallele Verarbeitung mit mehreren Threads beschleunigt die Verarbeitung gr
 - Die Ergebnisse werden in temporäre Dateien geschrieben
 - Am Ende werden alle Teilergebnisse zusammengeführt
 - Die Fortschrittsanzeige zeigt den Status jedes Threads separat
+
+---
+
+# English Quick Start Guide
+
+JsonLinkCheck is a tool for checking and cleaning URLs in JSON Lines files.
+
+## Installation
+
+```bash
+# Using uv (recommended)
+curl -LsSf https://astral.sh/uv/install.sh | sh  # Linux/MacOS
+uv tool install slubjsonlinkcheck
+
+# Or using pip
+pip install slubjsonlinkcheck
+```
+
+## Basic Usage
+
+```bash
+# Check URLs in specific fields
+jsonlinkcheck input.jsonl url_field [other_fields...]
+
+# Common options
+--delete-timeouts     # Delete URLs that timeout (default: keep them)
+--follow-redirects    # Follow and update redirected URLs
+--redirects-file FILE # Save redirects to file (source;target format)
+--timeout-file FILE   # Save timeout URLs to file
+--threads N          # Use N parallel threads
+--visual             # Show progress bars
+```
+
+### Examples
+
+```bash
+# Basic usage (keeps timeout URLs)
+jsonlinkcheck data.jsonl url_field
+
+# Delete timeout URLs and follow redirects
+jsonlinkcheck data.jsonl url_field --delete-timeouts --follow-redirects
+
+# Process with 4 threads and track redirects
+jsonlinkcheck data.jsonl url_field --threads 4 --redirects-file redirects.txt --visual
+```
+
+For detailed documentation in German, see above.

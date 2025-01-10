@@ -1,6 +1,6 @@
 # Technical Decisions Documentation
 
-This document explains the key technical decisions made in the LinkCheck tool.
+This document explains the key technical decisions made in the JsonLinkCheck tool.
 
 ## Core Architecture Decisions
 
@@ -48,16 +48,20 @@ This document explains the key technical decisions made in the LinkCheck tool.
   - Clean up temporary files
 
 ### 5. URL Processing
-- **Decision**: Two-step URL validation
+- **Decision**: Two-step URL validation with retry mechanism
 - **Why**:
   - Fast rejection of invalid URLs
   - Detailed status tracking
   - Handle redirects properly
+  - Resilient against network issues
 - **Implementation**:
   - Syntactic validation first (fast)
   - HTTP check second (slow)
   - Support for arrays of URLs
   - Configurable timeout handling
+  - Exponential backoff for retries
+  - Default: Keep timeout URLs
+  - Optional: Delete timeout URLs
 
 ### 6. Progress Tracking
 - **Decision**: Dual progress display system
@@ -72,7 +76,7 @@ This document explains the key technical decisions made in the LinkCheck tool.
   - Overall progress tracking
 
 ### 7. Data Structures
-- **Decision**: Use dataclasses for statistics
+- **Decision**: Use dataclasses for statistics and error handling
 - **Why**:
   - Type safety
   - Clear structure
@@ -82,29 +86,36 @@ This document explains the key technical decisions made in the LinkCheck tool.
   - `FieldStats` for per-field stats
   - `Statistics` for overall collection
   - Thread-safe counters
+  - Custom error classes
+  - Redirect mapping
 
 ### 8. Error Handling
-- **Decision**: Graceful error handling at multiple levels
+- **Decision**: Hierarchical error handling system
 - **Why**:
   - Resilient processing
   - Detailed error reporting
   - Continue on partial failures
+  - Clear error categorization
 - **Implementation**:
+  - Base `ProcessingError` class
+  - Specialized error types (Network, File, Validation)
   - Per-URL error handling
   - Per-chunk error isolation
   - JSON parsing error recovery
-  - Network error handling
+  - Network error handling with retries
 
 ### 9. File Handling
-- **Decision**: Use temporary files for thread output
+- **Decision**: Use temporary directory for thread output
 - **Why**:
   - Memory efficient
   - Thread-safe output
   - Recoverable state
+  - Clean cleanup
 - **Implementation**:
-  - Numbered temp files
-  - Automatic cleanup
+  - Temporary directory with prefix
+  - Automatic cleanup in finally block
   - Sequential merge
+  - Redirect and timeout logging
 
 ### 10. Configuration
 - **Decision**: Command-line interface with sensible defaults
@@ -112,10 +123,13 @@ This document explains the key technical decisions made in the LinkCheck tool.
   - Flexible usage
   - Script-friendly
   - Self-documenting
+  - Safe defaults
 - **Implementation**:
   - argparse for CLI
   - Environment-independent
   - Validated parameters
+  - Default: keep timeout URLs
+  - Optional redirect tracking
 
 ## Dependencies
 
@@ -138,6 +152,7 @@ This document explains the key technical decisions made in the LinkCheck tool.
 - Configurable chunk size
 - No full file loading
 - Garbage collection friendly
+- Temporary file cleanup
 
 ### CPU Usage
 - Async I/O for network
@@ -150,6 +165,7 @@ This document explains the key technical decisions made in the LinkCheck tool.
 - Configurable timeouts
 - Connection pooling
 - Error resilience
+- Retry mechanism with backoff
 
 ## Future Considerations
 
@@ -158,4 +174,6 @@ This document explains the key technical decisions made in the LinkCheck tool.
 - Persistent statistics storage
 - URL validation caching
 - Custom HTTP client configuration
-- Batch mode for repeated runs 
+- Batch mode for repeated runs
+- Support for more URL schemes
+- Custom redirect policies 
