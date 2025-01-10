@@ -138,6 +138,8 @@ class Statistics:
         elif new_url and new_url != url:
             stats.redirects += 1
             stats.valid_urls += 1
+            # Speichere die Weiterleitung in der redirects_map
+            stats.redirects_map.append((url, new_url))
         else:
             stats.valid_urls += 1
 
@@ -154,7 +156,7 @@ class Statistics:
         logger.info("=====================")
 
         for field_name, stats in sorted(self.field_stats.items()):
-            logger.info(f"\nFeld: {field_name}")
+            logger.info(f"Feld: {field_name}")
             logger.info(f"  Gesamt URLs geprüft: {stats.total_urls}")
             logger.info(f"  Gültige URLs: {stats.valid_urls}")
             if stats.redirects > 0:
@@ -170,7 +172,7 @@ class Statistics:
 
             # Im ausführlichen Modus zeigen wir auch die häufigsten Domains
             if verbose and stats.domains:
-                logger.info("\n  Top Domains:")
+                logger.info("  Top Domains:")
                 sorted_domains = sorted(
                     stats.domains.items(), key=lambda x: (-x[1], x[0])
                 )[:5]
@@ -248,6 +250,14 @@ async def check_url(
                 elif status in (301, 302):
                     new_location = response.headers.get("Location")
                     if new_location:
+                        # Wenn die neue URL relativ ist, mache sie absolut
+                        if not new_location.startswith(("http://", "https://")):
+                            parsed_url = urlparse(url)
+                            base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                            if new_location.startswith("/"):
+                                new_location = base_url + new_location
+                            else:
+                                new_location = base_url + "/" + new_location
                         if verbose:
                             logger.debug(
                                 f"URL {url} wurde zu {new_location} weitergeleitet (Status {status})"
@@ -386,6 +396,16 @@ async def process_chunk(
                                     verbose and not chunk_progress,
                                     timeout,
                                 )
+
+                                if new_url and new_url != url and follow_redirects:
+                                    if verbose and not chunk_progress:
+                                        logger.debug(
+                                            f"Weiterleitung gefunden: {url} -> {new_url}"
+                                        )
+                                    stats.field_stats[field].redirects_map.append(
+                                        (url, new_url)
+                                    )
+
                                 stats.add_url_check(
                                     field,
                                     url,
@@ -421,10 +441,6 @@ async def process_chunk(
                                             f"Aktualisiere URL im Array von {url} zu {new_url}"
                                         )
                                     valid_urls.append(new_url)
-                                    # Speichere die Weiterleitung
-                                    stats.field_stats[field].redirects_map.append(
-                                        (url, new_url)
-                                    )
                                 else:
                                     valid_urls.append(url)
 
@@ -443,6 +459,16 @@ async def process_chunk(
                         is_valid, new_url, is_timeout, status_code = await check_url(
                             session, value, verbose and not chunk_progress, timeout
                         )
+
+                        if new_url and new_url != value and follow_redirects:
+                            if verbose and not chunk_progress:
+                                logger.debug(
+                                    f"Weiterleitung gefunden: {value} -> {new_url}"
+                                )
+                            stats.field_stats[field].redirects_map.append(
+                                (value, new_url)
+                            )
+
                         stats.add_url_check(
                             field, value, is_valid, new_url, is_timeout, status_code
                         )
@@ -473,10 +499,6 @@ async def process_chunk(
                                     f"Aktualisiere URL in Feld '{field}' von {value} zu {new_url}"
                                 )
                             processed_item[field] = new_url
-                            # Speichere die Weiterleitung
-                            stats.field_stats[field].redirects_map.append(
-                                (value, new_url)
-                            )
                     else:
                         if verbose and not chunk_progress and isinstance(value, str):
                             logger.debug(
@@ -500,9 +522,10 @@ async def process_chunk_in_thread(
     timeout_urls: Set[str],
     stats: Statistics,
     visual: bool = False,
-) -> None:
+) -> Tuple[List[Dict], Statistics]:
     """
     Verarbeitet einen Chunk in einem separaten Thread.
+    Gibt die verarbeiteten Daten und die Statistiken zurück.
     """
     chunk, chunk_num = chunk_data
     chunk_progress = None
@@ -531,6 +554,8 @@ async def process_chunk_in_thread(
     with open(output_file, "w") as out_f:
         for item in processed_chunk:
             out_f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+    return processed_chunk, stats
 
 
 async def process_json_file(
@@ -581,6 +606,7 @@ async def process_json_file(
         timeout_urls: Set[str] = set()
         stats = Statistics()
         chunk_num = 0
+        all_redirects: Set[Tuple[str, str]] = set()  # Sammle alle Redirects
 
         if visual:
             main_progress = tqdm(
@@ -607,7 +633,7 @@ async def process_json_file(
                     temp_dir / f"chunk_{chunk_num:05d}.jsonl",
                     len(active_tasks),
                     timeout_urls,
-                    stats,
+                    Statistics(),  # Neue Statistik-Instanz für jeden Thread
                     visual,
                 )
             )
@@ -617,26 +643,53 @@ async def process_json_file(
             # Wenn wir genug Tasks haben oder es der letzte Chunk ist
             if len(active_tasks) >= num_threads:
                 # Warte auf Abschluss aller aktiven Tasks
-                await asyncio.gather(*active_tasks)
+                results = await asyncio.gather(*active_tasks)
                 if visual:
-                    main_progress.update(
-                        sum(
-                            len(c[0])
-                            for c in [t.result() for t in active_tasks if t.done()]
-                        )
-                    )
+                    main_progress.update(sum(len(chunk) for chunk, _ in results))
+
+                # Sammle Statistiken und Redirects
+                for _, thread_stats in results:
+                    for field_name, field_stats in thread_stats.field_stats.items():
+                        stats.field_stats[
+                            field_name
+                        ].total_urls += field_stats.total_urls
+                        stats.field_stats[
+                            field_name
+                        ].valid_urls += field_stats.valid_urls
+                        stats.field_stats[
+                            field_name
+                        ].invalid_urls += field_stats.invalid_urls
+                        stats.field_stats[field_name].redirects += field_stats.redirects
+                        stats.field_stats[field_name].not_found += field_stats.not_found
+                        stats.field_stats[field_name].timeouts += field_stats.timeouts
+                        stats.field_stats[field_name].errors += field_stats.errors
+                        for domain, count in field_stats.domains.items():
+                            stats.field_stats[field_name].domains[domain] += count
+                        all_redirects.update(field_stats.redirects_map)
+
                 active_tasks = []
 
         # Warte auf verbleibende Tasks
         if active_tasks:
-            await asyncio.gather(*active_tasks)
+            results = await asyncio.gather(*active_tasks)
             if visual:
-                main_progress.update(
-                    sum(
-                        len(c[0])
-                        for c in [t.result() for t in active_tasks if t.done()]
-                    )
-                )
+                main_progress.update(sum(len(chunk) for chunk, _ in results))
+
+            # Sammle Statistiken und Redirects von den verbleibenden Tasks
+            for _, thread_stats in results:
+                for field_name, field_stats in thread_stats.field_stats.items():
+                    stats.field_stats[field_name].total_urls += field_stats.total_urls
+                    stats.field_stats[field_name].valid_urls += field_stats.valid_urls
+                    stats.field_stats[
+                        field_name
+                    ].invalid_urls += field_stats.invalid_urls
+                    stats.field_stats[field_name].redirects += field_stats.redirects
+                    stats.field_stats[field_name].not_found += field_stats.not_found
+                    stats.field_stats[field_name].timeouts += field_stats.timeouts
+                    stats.field_stats[field_name].errors += field_stats.errors
+                    for domain, count in field_stats.domains.items():
+                        stats.field_stats[field_name].domains[domain] += count
+                    all_redirects.update(field_stats.redirects_map)
 
         if visual:
             main_progress.close()
@@ -664,19 +717,14 @@ async def process_json_file(
                 )
 
         # Speichere Weiterleitungen
-        if redirects_file:
-            redirects_list = []
-            for field_stat in stats.field_stats.values():
-                redirects_list.extend(field_stat.redirects_map)
-
-            if redirects_list:
-                with open(redirects_file, "w") as rf:
-                    for source, target in sorted(set(redirects_list)):
-                        rf.write(f"{source};{target}\n")
-                if verbose and not visual:
-                    logger.debug(
-                        f"{len(redirects_list)} Weiterleitungen in {redirects_file.name} gespeichert"
-                    )
+        if redirects_file and all_redirects:
+            with open(redirects_file, "w") as rf:
+                for source, target in sorted(all_redirects):
+                    rf.write(f"{source};{target}\n")
+            if verbose and not visual:
+                logger.debug(
+                    f"{len(all_redirects)} Weiterleitungen in {redirects_file.name} gespeichert"
+                )
 
         if not visual:
             stats.print_summary(verbose)
